@@ -41,7 +41,7 @@ workflows:
                 export ANDROID_SDK_ROOT="$ANDROID_HOME"
                 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
                 java -version
-                ./gradlew --no-daemon test
+                sh ./gradlew --no-daemon test
 
           - name: assemble-debug
             retry: 2
@@ -52,7 +52,7 @@ workflows:
                 export ANDROID_HOME="$HOME/android-sdk"
                 export ANDROID_SDK_ROOT="$ANDROID_HOME"
                 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-                ./gradlew --no-daemon assembleDebug
+                sh ./gradlew --no-daemon assembleDebug
             artifacts:
               paths:
                 - app/build/outputs/apk/debug/*.apk
@@ -74,7 +74,7 @@ workflows:
                 if [ -n "$KEYSTORE_BASE64" ]; then
                   echo "$KEYSTORE_BASE64" | base64 -d > keystore.jks
                 fi
-                ./gradlew --no-daemon assembleRelease
+                sh ./gradlew --no-daemon assembleRelease
             artifacts:
               paths:
                 - app/build/outputs/apk/release/*.apk
