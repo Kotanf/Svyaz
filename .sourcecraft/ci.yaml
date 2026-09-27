@@ -14,35 +14,33 @@ workflows:
     tasks:
       - name: android-ci
         cubes:
-          - name: prepare-sdk
-            image: cr.yandex/mirror/thyrlian/android-sdk:latest
-            retry: 3
+          - name: setup-environment
+            retry: 2
             script:
               - |
                 set -e
-                if [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-                elif [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-                else
-                  export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
-                fi
-                export PATH="$JAVA_HOME/bin:$PATH"
-                java -version
-                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+                sudo apt-get update -qq
+                sudo apt-get install -y -qq openjdk-17-jdk-headless unzip curl
+                export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+                export ANDROID_HOME="$HOME/android-sdk"
+                mkdir -p "$ANDROID_HOME/cmdline-tools"
+                curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+                unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
+                mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" 2>/dev/null || true
+                yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+                "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-37" "build-tools;35.0.0" >/dev/null 2>&1 || true
+                echo "Android SDK installed at $ANDROID_HOME"
 
           - name: unit-tests
             retry: 2
             script:
               - |
                 set -e
-                if [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-                elif [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-                fi
-                export PATH="$JAVA_HOME/bin:$PATH"
-                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+                export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+                export ANDROID_HOME="$HOME/android-sdk"
+                export ANDROID_SDK_ROOT="$ANDROID_HOME"
+                export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+                java -version
                 ./gradlew --no-daemon test
 
           - name: assemble-debug
@@ -50,13 +48,10 @@ workflows:
             script:
               - |
                 set -e
-                if [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-                elif [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-                fi
-                export PATH="$JAVA_HOME/bin:$PATH"
-                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+                export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+                export ANDROID_HOME="$HOME/android-sdk"
+                export ANDROID_SDK_ROOT="$ANDROID_HOME"
+                export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
                 ./gradlew --no-daemon assembleDebug
             artifacts:
               paths:
@@ -72,13 +67,10 @@ workflows:
             script:
               - |
                 set -e
-                if [ -d /usr/lib/jvm/java-17-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-                elif [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-                  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-                fi
-                export PATH="$JAVA_HOME/bin:$PATH"
-                yes | sdkmanager --licenses >/dev/null 2>&1 || true
+                export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+                export ANDROID_HOME="$HOME/android-sdk"
+                export ANDROID_SDK_ROOT="$ANDROID_HOME"
+                export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
                 if [ -n "$KEYSTORE_BASE64" ]; then
                   echo "$KEYSTORE_BASE64" | base64 -d > keystore.jks
                 fi
