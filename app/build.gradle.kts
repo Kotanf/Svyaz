@@ -1,3 +1,6 @@
+import java.util.Base64
+import java.io.File
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
@@ -21,11 +24,35 @@ android {
         }
     }
 
+    signingConfigs {
+        // Конфигурация подписи release-сборки.
+        // В CI/CD keystore передается через секреты (переменные окружения):
+        // KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD.
+        // Локально, когда секреты не заданы, используется debug-ключ.
+        create("release") {
+            val keystoreBase64 = System.getenv("KEYSTORE_BASE64")
+            if (!keystoreBase64.isNullOrBlank()) {
+                val keystoreFile = File(rootProject.rootDir, "keystore.jks")
+                keystoreFile.writeBytes(Base64.getDecoder().decode(keystoreBase64))
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            } else {
+                // Fallback для локальной разработки: debug-ключ
+                storeFile = signingConfigs.getByName("debug").storeFile
+                storePassword = signingConfigs.getByName("debug").storePassword
+                keyAlias = signingConfigs.getByName("debug").keyAlias
+                keyPassword = signingConfigs.getByName("debug").keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("debug") // Using debug key for now to allow local testing of release build
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
