@@ -15,7 +15,8 @@ workflows:
       - name: android-ci
         cubes:
           - name: prepare-sdk
-            image: thyrlian/android-sdk:latest
+            image: cr.yandex/mirror/thyrlian/android-sdk:latest
+            retry: 3
             script:
               - |
                 set -e
@@ -31,6 +32,7 @@ workflows:
                 yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
           - name: unit-tests
+            retry: 2
             script:
               - |
                 set -e
@@ -44,6 +46,7 @@ workflows:
                 ./gradlew --no-daemon test
 
           - name: assemble-debug
+            retry: 2
             script:
               - |
                 set -e
@@ -60,6 +63,7 @@ workflows:
                 - app/build/outputs/apk/debug/*.apk
 
           - name: assemble-release
+            retry: 2
             env:
               KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
               KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
