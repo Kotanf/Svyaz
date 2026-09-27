@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Exclude sensitive Room database from cloud backup -->
+        <exclude domain="database" path="svyaz_database" />
+        <exclude domain="database" path="svyaz_database-shm" />
+        <exclude domain="database" path="svyaz_database-wal" />
+    </cloud-backup>
+    <device-transfer>
+        <!-- Exclude sensitive Room database from device-to-device transfer -->
+        <exclude domain="database" path="svyaz_database" />
+        <exclude domain="database" path="svyaz_database-shm" />
+        <exclude domain="database" path="svyaz_database-wal" />
+    </device-transfer>
+</data-extraction-rules>

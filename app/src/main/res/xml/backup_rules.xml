@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Exclude sensitive Room database from legacy auto backup -->
+    <exclude domain="database" path="svyaz_database" />
+    <exclude domain="database" path="svyaz_database-shm" />
+    <exclude domain="database" path="svyaz_database-wal" />
+</full-backup-content>
