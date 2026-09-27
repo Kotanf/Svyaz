@@ -32,12 +32,12 @@ android {
         create("release") {
             val keystoreBase64 = System.getenv("KEYSTORE_BASE64")
             if (!keystoreBase64.isNullOrBlank()) {
-                val keystoreFile = File(rootProject.rootDir, "keystore.jks")
+                val keystoreFile = File(rootProject.rootDir, "PERSIK")
                 keystoreFile.writeBytes(Base64.getDecoder().decode(keystoreBase64))
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storePassword = System.getenv("Abrek2013")
+                keyAlias = System.getenv("key0")
+                keyPassword = System.getenv("Abrek2013")
             } else {
                 // Fallback для локальной разработки: debug-ключ
                 storeFile = signingConfigs.getByName("debug").storeFile
