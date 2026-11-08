@@ -10,18 +10,13 @@ import android.os.Bundle
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
-import android.util.Base64
 import android.util.Log
 import androidx.compose.ui.graphics.Color
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.security.GeneralSecurityException
-import java.util.*
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * SystemDataProvider fetches messaging and call data from the Android system providers.
@@ -32,6 +27,24 @@ class SystemDataProvider(private val context: Context) {
 
     private val contentResolver: ContentResolver = context.contentResolver
     private val contactCache = ConcurrentHashMap<String, String>()
+
+    val hasMultipleSims: Boolean
+        get() {
+            return try {
+                val subscriptionManager = context.getSystemService(android.telephony.SubscriptionManager::class.java)
+                if (subscriptionManager != null) {
+                    val count = try {
+                        subscriptionManager.activeSubscriptionInfoCount
+                    } catch (_: SecurityException) {
+                        subscriptionManager.activeSubscriptionInfoList?.size ?: 0
+                    }
+                    return count > 1
+                }
+                false
+            } catch (_: Exception) {
+                false
+            }
+        }
 
     /**
      * Fetches all message threads. 
@@ -63,6 +76,10 @@ class SystemDataProvider(private val context: Context) {
                 contentResolver.query(uri, projection, null, null, "date DESC LIMIT 1000")
             }
             
+            // Collect unique addresses for bulk contact lookup optimization
+            val uniqueAddresses = mutableSetOf<String>()
+            val rawThreads = mutableListOf<Triple<String, String, Boolean>>() // threadId, address, isUnread
+            
             cursor?.let {
                 val tidIdx = it.getColumnIndex(Telephony.Sms.THREAD_ID)
                 val addrIdx = it.getColumnIndex(Telephony.Sms.ADDRESS)
@@ -75,40 +92,45 @@ class SystemDataProvider(private val context: Context) {
                     val threadId = if (tidIdx != -1) it.getString(tidIdx) else null
                     if (threadId.isNullOrBlank() || threadId == "0") continue
                     
-                    if (threadsMap.containsKey(threadId)) {
-                        val isRead = it.getInt(readIdx) == 1
-                        if (!isRead && it.getInt(typeIdx) == Telephony.Sms.MESSAGE_TYPE_INBOX) {
-                            val existing = threadsMap[threadId]!!
-                            threadsMap[threadId] = existing.copy(unreadCount = existing.unreadCount + 1)
-                        }
-                        continue
-                    }
-
                     val rawAddress = it.getString(addrIdx)
                     val address = if (rawAddress.isNullOrBlank() || rawAddress == "Неизвестный") {
                         resolveAddress(threadId) ?: "Неизвестный"
                     } else {
                         rawAddress
                     }
-                    val normalizedPhone = if (address != "Неизвестный") normalizeNumber(address) else ""
-                    val body = it.getString(bodyIdx) ?: ""
-                    val date = it.getLong(dateIdx)
-                    val isRead = it.getInt(readIdx) == 1
                     
-                    val name = getContactNameCached(address) ?: getContactNameCached(normalizedPhone) ?: address
-                    val lastMessage = smartDecode(body)
-                    
-                    threadsMap[threadId] = MessageThread(
-                        id = threadId,
-                        contactName = name,
-                        phoneNumber = if (normalizedPhone.isNotBlank()) normalizedPhone else if (address != "Неизвестный") address else "",
-                        lastMessage = lastMessage,
-                        lastMessageTime = date,
-                        unreadCount = if (isRead) 0 else 1,
-                        avatarColor = getRandomColor(),
-                        isMachine = isMachineSender(address),
-                        category = detectCategory(lastMessage, address)
-                    )
+                    if (!threadsMap.containsKey(threadId)) {
+                        val normalizedPhone = if (address != "Неизвестный") normalizeNumber(address) else ""
+                        val body = it.getString(bodyIdx) ?: ""
+                        val date = it.getLong(dateIdx)
+                        val isRead = it.getInt(readIdx) == 1
+                        val type = it.getInt(typeIdx)
+                        val isUnread = !isRead && type == Telephony.Sms.MESSAGE_TYPE_INBOX
+                        
+                        uniqueAddresses.add(address)
+                        if (normalizedPhone.isNotBlank() && normalizedPhone != address) {
+                            uniqueAddresses.add(normalizedPhone)
+                        }
+                        
+                        threadsMap[threadId] = MessageThread(
+                            id = threadId,
+                            contactName = getContactNameCached(address) ?: getContactNameCached(normalizedPhone) ?: address,
+                            phoneNumber = if (normalizedPhone.isNotBlank()) normalizedPhone else if (address != "Неизвестный") address else "",
+                            avatarUri = getContactPhotoUri(normalizedPhone) ?: getContactPhotoUri(address),
+                            lastMessage = body,
+                            lastMessageTime = date,
+                            unreadCount = if (isUnread) 1 else 0,
+                            avatarColor = getAvatarColorFor(address, normalizedPhone),
+                            isMachine = isMachineSender(address),
+                            category = detectCategory(body, address)
+                        )
+                    } else {
+                        val isRead = it.getInt(readIdx) == 1
+                        if (!isRead && it.getInt(typeIdx) == Telephony.Sms.MESSAGE_TYPE_INBOX) {
+                            val existing = threadsMap[threadId]!!
+                            threadsMap[threadId] = existing.copy(unreadCount = existing.unreadCount + 1)
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -119,7 +141,6 @@ class SystemDataProvider(private val context: Context) {
         }
         
         val result = threadsMap.values.sortedByDescending { it.lastMessageTime }
-        Log.d("SystemDataProvider", "Built ${result.size} threads")
         result
     }
 
@@ -185,51 +206,12 @@ class SystemDataProvider(private val context: Context) {
         return null
     }
 
-    private fun smartDecode(text: String): String {
-        if (text.isBlank()) return ""
-        
-        // 1. Strict Base64 validation (URL-safe & Standard)
-        val cleanText = text.replace("\n", "").replace("\r", "").replace("\\\\", "")
-        if (!cleanText.matches(Regex("^[A-Za-z0-9+/\\-_]*={0,2}$"))) {
-            return text
-        }
-
-        return try {
-            val combined = Base64.decode(cleanText, Base64.DEFAULT)
-            
-            // 2. Basic sanity checks to prevent OOM and malformed data
-            if (combined.size < 28) return text // Too short for IV + Tag + Min data
-            
-            // 3. Extract GCM Tag and verify it looks like random bytes, not plain text overflow
-            val iv = combined.copyOfRange(0, 12)
-            val encryptedPayload = combined.copyOfRange(12, combined.size)
-            
-            // 4. Decrypt only if key is available and data is valid (AES-GCM throws on bad tag)
-            val keyBytes = SecurityManager.getDatabasePassphrase(context)
-            try {
-                val secretKey = SecretKeySpec(keyBytes, "AES")
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                val spec = GCMParameterSpec(128, iv)
-                cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
-                val decryptedBytes = cipher.doFinal(encryptedPayload)
-                
-                val decryptedString = String(decryptedBytes, Charsets.UTF_8)
-                // 5. Final check to ensure no injection or garbage
-                if (decryptedString.all { it.code > 31 || it == '\n' || it == '\r' || it == '\t' }) {
-                    return decryptedString
-                }
-            } finally {
-                // Guaranteed memory sanitization
-                SecurityManager.sanitize(keyBytes)
-            }
-            
-            text // Return raw if decryption failed or integrity check failed
-        } catch (_: IllegalArgumentException) {
-            text // Not valid Base64
-        } catch (_: GeneralSecurityException) {
-            text // Bad key, bad tag, or tampering detected
-        }
-    }
+    /**
+     * Escapes LIKE wildcard characters so a user-supplied address cannot match
+     * unrelated threads (e.g. a '%' in the number). Pairs with ESCAPE '\\'.
+     */
+    private fun escapeLike(value: String): String =
+        value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     suspend fun fetchContacts(): List<MessageThread> = withContext(Dispatchers.IO) {
         val contacts = mutableListOf<MessageThread>()
@@ -238,17 +220,20 @@ class SystemDataProvider(private val context: Context) {
             val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
             val projection = arrayOf(
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+                ContactsContract.CommonDataKinds.Phone.PHOTO_URI
             )
 
             cursor = contentResolver.query(uri, projection, null, null, "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC")
             cursor?.let {
                 val nameIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                 val numberIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                val photoIdx = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_URI)
 
                 while (it.moveToNext()) {
                     val name = if (nameIdx != -1) it.getString(nameIdx) ?: "Без имени" else "Без имени"
                     val number = if (numberIdx != -1) it.getString(numberIdx) ?: "" else ""
+                    val photo = if (photoIdx != -1) it.getString(photoIdx) else null
                     
                     if (number.isNotBlank()) {
                         contacts.add(
@@ -256,9 +241,10 @@ class SystemDataProvider(private val context: Context) {
                                 id = normalizeNumber(number),
                                 contactName = name,
                                 phoneNumber = number,
+                                avatarUri = photo,
                                 lastMessage = number,
                                 lastMessageTime = 0,
-                                avatarColor = getRandomColor()
+                                avatarColor = getAvatarColorFor(name, number)
                             )
                         )
                     }
@@ -306,6 +292,75 @@ class SystemDataProvider(private val context: Context) {
         return null
     }
 
+    fun getContactPhotoUri(number: String): String? {
+        if (number == "Неизвестный" || number.isBlank()) return null
+        val normalized = normalizeNumber(number)
+        if (normalized.isBlank()) return null
+
+        var cursor: Cursor? = null
+        try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(normalized))
+            cursor = contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI), null, null, null)
+            if (cursor?.moveToFirst() == true) {
+                val photo = cursor.getString(0)
+                if (!photo.isNullOrBlank()) return photo
+            }
+        } catch (_: Exception) {
+        } finally {
+            cursor?.close()
+        }
+        return null
+    }
+
+    fun getContactUri(number: String): Uri? {
+        if (number == "Неизвестный" || number.isBlank()) return null
+        val normalized = normalizeNumber(number)
+        if (normalized.isBlank()) return null
+
+        var cursor: Cursor? = null
+        try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(normalized))
+            cursor = contentResolver.query(
+                uri,
+                arrayOf(ContactsContract.PhoneLookup._ID, ContactsContract.PhoneLookup.LOOKUP_KEY),
+                null,
+                null,
+                null
+            )
+            if (cursor?.moveToFirst() == true) {
+                val id = cursor.getLong(0)
+                val lookupKey = cursor.getString(1)
+                return ContactsContract.Contacts.getLookupUri(id, lookupKey)
+            }
+        } catch (e: Exception) {
+            Log.e("SystemDataProvider", "Contact URI lookup failed", e)
+        } finally {
+            cursor?.close()
+        }
+        return null
+    }
+
+    suspend fun markMessagesAsRead(threadId: String?, address: String?) = withContext(Dispatchers.IO) {
+        try {
+            val values = ContentValues().apply {
+                put(Telephony.Sms.READ, 1)
+                put(Telephony.Sms.SEEN, 1)
+            }
+            if (!threadId.isNullOrBlank() && threadId != "0") {
+                contentResolver.update(Telephony.Sms.Inbox.CONTENT_URI, values, "thread_id = ? AND read = 0", arrayOf(threadId))
+            }
+            if (!address.isNullOrBlank()) {
+                contentResolver.update(Telephony.Sms.Inbox.CONTENT_URI, values, "address = ? AND read = 0", arrayOf(address))
+                val normalized = normalizeNumber(address)
+                if (normalized != address) {
+                    contentResolver.update(Telephony.Sms.Inbox.CONTENT_URI, values, "address = ? AND read = 0", arrayOf(normalized))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SystemDataProvider", "Error marking messages as read", e)
+        }
+    }
+
     private fun getThreadIdForAddress(address: String): String? {
         if (address.isBlank() || address == "Неизвестный") return null
         
@@ -328,8 +383,8 @@ class SystemDataProvider(private val context: Context) {
                 cursor = contentResolver.query(
                     Telephony.Sms.CONTENT_URI,
                     arrayOf(Telephony.Sms.THREAD_ID),
-                    "${Telephony.Sms.ADDRESS} LIKE ?",
-                    arrayOf("%$partial%"),
+                    "${Telephony.Sms.ADDRESS} LIKE ? ESCAPE '\\'",
+                    arrayOf("%${escapeLike(partial)}%"),
                     "date DESC LIMIT 1"
                 )
                 if (cursor?.moveToFirst() == true) {
@@ -341,11 +396,7 @@ class SystemDataProvider(private val context: Context) {
             cursor?.close()
         }
 
-        try {
-            return Telephony.Threads.getOrCreateThreadId(context, address).toString()
-        } catch (_: Exception) {}
-
-        return null
+        return address.ifBlank { null }
     }
 
     suspend fun fetchTimeline(idOrAddress: String): Pair<String, List<TimelineEvent>> = withContext(Dispatchers.IO) {
@@ -353,17 +404,21 @@ class SystemDataProvider(private val context: Context) {
         
         var threadId: String? = null
         if (idOrAddress.all { it.isDigit() } && idOrAddress.length < 10) {
-            threadId = idOrAddress
-            var testCursor: Cursor? = null
-            try {
-                testCursor = contentResolver.query(Telephony.Threads.CONTENT_URI, arrayOf("_id"), "_id = ?", arrayOf(threadId), null)
-                if (testCursor?.moveToFirst() != true) {
-                    threadId = getThreadIdForAddress(idOrAddress)
-                }
+            val hasMessages = try {
+                contentResolver.query(
+                    Telephony.Sms.CONTENT_URI,
+                    arrayOf(Telephony.Sms._ID),
+                    "thread_id = ?",
+                    arrayOf(idOrAddress),
+                    "date DESC LIMIT 1"
+                )?.use { it.count > 0 } ?: false
             } catch (_: Exception) {
+                false
+            }
+            if (hasMessages) {
+                threadId = idOrAddress
+            } else {
                 threadId = getThreadIdForAddress(idOrAddress)
-            } finally {
-                testCursor?.close()
             }
         } else {
             threadId = getThreadIdForAddress(idOrAddress)
@@ -399,8 +454,7 @@ class SystemDataProvider(private val context: Context) {
                     val type = if (typeIdx != -1) it.getInt(typeIdx) else Telephony.Sms.MESSAGE_TYPE_INBOX
                     
                     if (rawBody.isNotBlank()) {
-                        val decodedBody = smartDecode(rawBody)
-                        val safeBody = if (decodedBody.length > 2000) decodedBody.substring(0, 2000) else decodedBody
+                        val safeBody = if (rawBody.length > 2000) rawBody.substring(0, 2000) else rawBody
                         
                         events.add(
                             TimelineEvent.Message(
@@ -417,6 +471,16 @@ class SystemDataProvider(private val context: Context) {
             Log.e("SystemDataProvider", "Error fetching SMS timeline", e)
         } finally {
             smsCursor?.close()
+        }
+
+        // If thread query returned nothing, check messages by address fallback
+        if (events.isEmpty()) {
+            if (address.isNotBlank() && address != "Неизвестный") {
+                events.addAll(fetchMessagesByAddress(address))
+            }
+            if (events.isEmpty() && idOrAddress != address && idOrAddress.isNotBlank()) {
+                events.addAll(fetchMessagesByAddress(idOrAddress))
+            }
         }
 
         // Fetch MMS
@@ -499,8 +563,8 @@ class SystemDataProvider(private val context: Context) {
             cursor = contentResolver.query(
                 Telephony.Sms.CONTENT_URI,
                 arrayOf(Telephony.Sms._ID, Telephony.Sms.BODY, Telephony.Sms.DATE, Telephony.Sms.TYPE),
-                "${Telephony.Sms.ADDRESS} = ? OR ${Telephony.Sms.ADDRESS} LIKE ?",
-                arrayOf(address, "%$searchAddress%"),
+                "${Telephony.Sms.ADDRESS} = ? OR ${Telephony.Sms.ADDRESS} LIKE ? ESCAPE '\\'",
+                arrayOf(address, "%${escapeLike(searchAddress)}%"),
                 "date ASC"
             )
             cursor?.let {
@@ -514,8 +578,7 @@ class SystemDataProvider(private val context: Context) {
                     val timestamp = if (dateIdx != -1) it.getLong(dateIdx) else System.currentTimeMillis()
                     val type = if (typeIdx != -1) it.getInt(typeIdx) else Telephony.Sms.MESSAGE_TYPE_INBOX
                     if (rawBody.isNotBlank()) {
-                        val decodedBody = smartDecode(rawBody)
-                        val safeBody = if (decodedBody.length > 2000) decodedBody.substring(0, 2000) else decodedBody
+                        val safeBody = if (rawBody.length > 2000) rawBody.substring(0, 2000) else rawBody
                         
                         events.add(
                             TimelineEvent.Message(
@@ -623,7 +686,7 @@ class SystemDataProvider(private val context: Context) {
                             type = typeStr,
                             timestamp = date,
                             isMissed = isMissed,
-                            avatarColor = getRandomColor()
+                            avatarColor = getAvatarColorFor(if (name == number) getContactNameCached(number) ?: number else name, number)
                         )
                     )
                 }
@@ -636,15 +699,5 @@ class SystemDataProvider(private val context: Context) {
         callLogs.distinctBy { it.id }
     }
 
-    private fun getRandomColor(): Color {
-        val colors = listOf(
-            Color(0xFF3F51B5), // Indigo
-            Color(0xFFEC407A), // Pink
-            Color(0xFF03A9F4), // Light Blue
-            Color(0xFF66BB6A), // Green
-            Color(0xFFFFA726), // Orange
-            Color(0xFFAB47BC)  // Purple
-        )
-        return colors.random()
-    }
+    private fun getRandomColor(): Color = getAvatarColorFor("default")
 }

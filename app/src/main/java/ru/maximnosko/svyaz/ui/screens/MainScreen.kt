@@ -7,8 +7,10 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -19,11 +21,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -49,50 +56,36 @@ sealed class Screen(
 fun MainScreen(
     viewModel: MessagesViewModel,
     snackbarHostState: SnackbarHostState,
-    onRequestPermissions: () -> Unit = {}
+    onRequestPermissions: () -> Unit = {},
+    openChatTarget: String? = null,
+    onChatOpened: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    val tabs = listOf(Screen.Contacts, Screen.Calls, Screen.Chats, Screen.Settings)
-    val showNavigation = tabs.any { it.route == currentDestination?.route }
     val uiState by viewModel.uiState.collectAsState()
-
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = {
-            if (showNavigation) {
-                ExpressiveNavigationBar {
-                    tabs.forEach { screen ->
-                        val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                        val badgeCount = if (screen == Screen.Chats) uiState.threads.sumOf { it.unreadCount } else 0
-
-                        ExpressiveNavigationBarItem(
-                            selected = selected,
-                            onClick = {
-                                navController.navigate(screen.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = screen.selectedIcon,
-                            unselectedIcon = screen.unselectedIcon,
-                            label = screen.title,
-                            badgeCount = badgeCount
-                        )
-                    }
-                }
-            }
+    val tabs = remember(uiState.isProModeUnlocked) {
+        if (uiState.isProModeUnlocked) {
+            listOf(Screen.Chats, Screen.Contacts, Screen.Calls, Screen.Settings)
+        } else {
+            listOf(Screen.Chats, Screen.Contacts, Screen.Settings)
         }
-    ) { innerPadding ->
+    }
+    val showNavigation = tabs.any { it.route == currentDestination?.route }
+
+    LaunchedEffect(openChatTarget) {
+        if (!openChatTarget.isNullOrBlank()) {
+            navController.navigate("chat/${Uri.encode(openChatTarget)}")
+            onChatOpened()
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         NavHost(
             navController = navController,
             startDestination = Screen.Chats.route,
-            modifier = Modifier.padding(if (showNavigation) innerPadding else PaddingValues()),
+            modifier = Modifier.fillMaxSize(),
             enterTransition = {
                 slideInHorizontally(
                     initialOffsetX = { (it * 0.12f).toInt() },
@@ -158,7 +151,17 @@ fun MainScreen(
                     onBack = { navController.popBackStack() },
                     onNavigateToFolders = { navController.navigate("folders") },
                     onNavigateToNetwork = { navController.navigate("network") },
-                    onNavigateToServices = { navController.navigate("services") }
+                    onNavigateToServices = { navController.navigate("services") },
+                    onNavigateToRadar = { navController.navigate("radar") }
+                )
+            }
+            composable("radar") {
+                OfflineRadarScreen(
+                    viewModel = viewModel,
+                    onBack = { navController.popBackStack() },
+                    onOpenChat = { target ->
+                        navController.navigate("chat/${Uri.encode(target)}")
+                    }
                 )
             }
             composable("folders") {
@@ -209,32 +212,92 @@ fun MainScreen(
                 )
             }
         }
+
+        // Truly floating capsule dock over content
+        AnimatedVisibility(
+            visible = showNavigation,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = slideInVertically(
+                initialOffsetY = { it },
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + fadeIn(animationSpec = tween(200)),
+            exit = slideOutVertically(
+                targetOffsetY = { it },
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+            ) + fadeOut(animationSpec = tween(200))
+        ) {
+            FloatingOvalNavigationBar {
+                tabs.forEach { screen ->
+                    val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                    val badgeCount = if (screen == Screen.Chats) uiState.threads.sumOf { it.unreadCount } else 0
+
+                    ExpressiveNavigationBarItem(
+                        selected = selected,
+                        onClick = {
+                            navController.navigate(screen.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        icon = screen.selectedIcon,
+                        unselectedIcon = screen.unselectedIcon,
+                        label = screen.title,
+                        badgeCount = badgeCount,
+                        route = screen.route
+                    )
+                }
+            }
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = if (showNavigation) 96.dp else 16.dp)
+        )
     }
 }
 
 /**
- * Google Material 3 Expressive Animated Navigation Bar
+ * Modern Floating Oval Navigation Bar (Dock capsule without background overlay)
  */
 @Composable
-fun ExpressiveNavigationBar(
+fun FloatingOvalNavigationBar(
     modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        tonalElevation = 3.dp
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.92f),
+            tonalElevation = 8.dp,
+            shadowElevation = 12.dp,
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f)
+            ),
             modifier = Modifier
                 .fillMaxWidth()
-                .windowInsetsPadding(NavigationBarDefaults.windowInsets)
-                .height(80.dp)
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically,
-            content = content
-        )
+                .height(64.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically,
+                content = content
+            )
+        }
     }
 }
 
@@ -245,19 +308,84 @@ fun RowScope.ExpressiveNavigationBarItem(
     icon: ImageVector,
     unselectedIcon: ImageVector,
     label: String,
-    badgeCount: Int = 0
+    badgeCount: Int = 0,
+    route: String = ""
 ) {
-    val pillWidth by animateDpAsState(
-        targetValue = if (selected) 64.dp else 0.dp,
+    val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "pressScale"
+    )
+
+    // Material Symbols micro-animations per tab:
+    // 1. Settings gear rotates 90 degrees
+    val gearRotation by animateFloatAsState(
+        targetValue = if (selected && route == "settings") 90f else 0f,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMediumLow),
+        label = "gearRotation"
+    )
+
+    // 2. Calls phone tilt wobble (-14 degrees)
+    val callRotation by animateFloatAsState(
+        targetValue = if (selected && route == "calls") -14f else 0f,
+        animationSpec = spring(dampingRatio = 0.4f, stiffness = Spring.StiffnessMediumLow),
+        label = "callRotation"
+    )
+
+    // 3. Chats bubble bouncy pop
+    val chatScalePop by animateFloatAsState(
+        targetValue = if (selected && route == "chats") 1.26f else if (selected) 1.18f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMediumLow),
+        label = "chatScalePop"
+    )
+
+    // 4. Contacts jump
+    val contactsJumpY by animateDpAsState(
+        targetValue = if (selected && route == "contacts") (-4).dp else if (selected) (-2).dp else 0.dp,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = Spring.StiffnessMediumLow),
+        label = "contactsJumpY"
+    )
+
+    val currentRotation = when (route) {
+        "settings" -> gearRotation
+        "calls" -> callRotation
+        else -> 0f
+    }
+
+    val currentScale = when (route) {
+        "chats" -> chatScalePop
+        else -> if (selected) 1.20f else 1.0f
+    }
+
+    val currentOffsetY = when (route) {
+        "contacts" -> contactsJumpY
+        else -> if (selected) (-2).dp else 0.dp
+    }
+
+    val pillScaleX by animateFloatAsState(
+        targetValue = if (selected) 1.0f else 0.35f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
         ),
-        label = "pillWidth"
+        label = "pillScaleX"
+    )
+
+    val pillAlpha by animateFloatAsState(
+        targetValue = if (selected) 1.0f else 0.0f,
+        animationSpec = tween(180),
+        label = "pillAlpha"
     )
 
     val iconScale by animateFloatAsState(
-        targetValue = if (selected) 1.22f else 1.0f,
+        targetValue = if (selected) 1.20f else 1.0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
@@ -265,78 +393,112 @@ fun RowScope.ExpressiveNavigationBarItem(
         label = "iconScale"
     )
 
-    val pillColor by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-        animationSpec = tween(220),
-        label = "pillColor"
+    val iconOffsetY by animateDpAsState(
+        targetValue = if (selected) (-2).dp else 0.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "iconOffsetY"
     )
+
+    val pillColor = MaterialTheme.colorScheme.secondaryContainer
 
     val iconColor by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(200),
+        animationSpec = tween(180),
         label = "iconColor"
     )
 
     val labelColor by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(200),
+        animationSpec = tween(180),
         label = "labelColor"
     )
 
     Column(
         modifier = Modifier
             .weight(1f)
+            .scale(pressScale)
             .clip(CircleShape)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onClick()
+                }
             )
-            .padding(vertical = 4.dp),
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Box(
             modifier = Modifier
-                .height(32.dp)
-                .width(64.dp),
+                .height(30.dp)
+                .width(58.dp),
             contentAlignment = Alignment.Center
         ) {
-            // Active Indicator Pill Expansion Animation
+            // Hardware-accelerated smooth background pill
             Surface(
                 modifier = Modifier
-                    .height(32.dp)
-                    .width(pillWidth),
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = pillScaleX
+                        scaleY = if (selected) 1.0f else 0.5f
+                        alpha = pillAlpha
+                    },
                 shape = CircleShape,
                 color = pillColor
             ) {}
 
-            // Bouncy Icon Scale with Badge
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = if (selected) icon else unselectedIcon,
-                    contentDescription = label,
-                    tint = iconColor,
-                    modifier = Modifier.scale(iconScale)
-                )
+            // Icon with Material Symbols micro-animations (scale, rotation, offset)
+            Box(
+                modifier = Modifier
+                    .scale(currentScale)
+                    .rotate(currentRotation)
+                    .offset(y = currentOffsetY),
+                contentAlignment = Alignment.Center
+            ) {
+                Crossfade(
+                    targetState = selected,
+                    animationSpec = tween(180),
+                    label = "iconCrossfade"
+                ) { isSel ->
+                    Icon(
+                        imageVector = if (isSel) icon else unselectedIcon,
+                        contentDescription = label,
+                        tint = iconColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
 
                 if (badgeCount > 0) {
                     Badge(
-                        modifier = Modifier.align(Alignment.TopEnd)
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 6.dp, y = (-4).dp),
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
                     ) {
-                        Text(if (badgeCount > 99) "99+" else badgeCount.toString())
+                        Text(
+                            text = if (badgeCount > 99) "99+" else badgeCount.toString(),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(2.dp))
 
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelSmall,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = labelColor
+            color = labelColor,
+            maxLines = 1
         )
     }
 }

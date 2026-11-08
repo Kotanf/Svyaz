@@ -5,8 +5,10 @@ import android.app.NotificationManager
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import ru.rustore.sdk.pushclient.messaging.service.RuStoreMessagingService
+import androidx.core.content.edit
+import ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException
 import ru.rustore.sdk.pushclient.messaging.model.RemoteMessage
+import ru.rustore.sdk.pushclient.messaging.service.RuStoreMessagingService
 
 /**
  * SvyazPushService integrates with RuStore Push SDK to handle remote notifications.
@@ -14,12 +16,18 @@ import ru.rustore.sdk.pushclient.messaging.model.RemoteMessage
 class SvyazPushService : RuStoreMessagingService() {
 
     override fun onNewToken(token: String) {
-        Log.d("SvyazPush", "Received new push token: $token")
+        if (BuildConfig.DEBUG) Log.d("SvyazPush", "Received new push token")
         try {
             val prefs = getSharedPreferences("svyaz_app_prefs", MODE_PRIVATE)
-            prefs.edit().putString("rustore_push_token", token).apply()
+            prefs.edit { putString("rustore_push_token", token) }
         } catch (e: Exception) {
             Log.e("SvyazPush", "Failed to save push token", e)
+        }
+    }
+
+    override fun onError(errors: List<RuStorePushClientException>) {
+        for (error in errors) {
+            Log.w("SvyazPush", "RuStore Push Service error handled: ${error.message}", error)
         }
     }
 

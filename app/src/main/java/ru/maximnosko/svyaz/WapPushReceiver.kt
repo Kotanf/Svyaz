@@ -11,7 +11,7 @@ class WapPushReceiver : BroadcastReceiver() {
         if (intent.action == Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) {
             try {
                 val mimeType = intent.type ?: "application/vnd.wap.mms-message"
-                Log.d("WapPushReceiver", "Received WAP PUSH deliver intent with mimeType: $mimeType")
+                if (BuildConfig.DEBUG) Log.d("WapPushReceiver", "Received WAP PUSH deliver intent with mimeType: $mimeType")
             } catch (e: Exception) {
                 Log.e("WapPushReceiver", "Error processing WAP PUSH deliver intent", e)
             }

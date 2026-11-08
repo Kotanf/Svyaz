@@ -76,6 +76,8 @@ class SmsSyncWorker(
                 val dateIdx = c.getColumnIndex(Telephony.Sms.DATE)
                 val typeIdx = c.getColumnIndex(Telephony.Sms.TYPE)
 
+                val messagesList = mutableListOf<MessageEntity>()
+
                 while (c.moveToNext()) {
                     val smsId = if (idIdx != -1) c.getString(idIdx) ?: System.currentTimeMillis().toString() else System.currentTimeMillis().toString()
                     val rawThreadId = if (threadIdIdx != -1) c.getString(threadIdIdx) else null
@@ -87,28 +89,29 @@ class SmsSyncWorker(
                     val finalThreadId = if (!rawThreadId.isNullOrBlank() && rawThreadId != "0") {
                         rawThreadId
                     } else if (address != "Неизвестный" && address.isNotBlank()) {
-                        try {
-                            Telephony.Threads.getOrCreateThreadId(appContext, address).toString()
-                        } catch (_: Exception) {
-                            "0"
-                        }
+                        address
                     } else {
                         "0"
                     }
 
-                    val message = MessageEntity(
-                        id = smsId,
-                        threadId = finalThreadId,
-                        timestamp = timestamp,
-                        content = body,
-                        isFromMe = (type == Telephony.Sms.MESSAGE_TYPE_SENT),
-                        isEncrypted = false,
-                        isEdited = false,
-                        status = "SENT",
-                        mediaUri = null,
-                        mediaType = null
+                    messagesList.add(
+                        MessageEntity(
+                            id = smsId,
+                            threadId = finalThreadId,
+                            timestamp = timestamp,
+                            content = body,
+                            isFromMe = (type == Telephony.Sms.MESSAGE_TYPE_SENT),
+                            isEncrypted = false,
+                            isEdited = false,
+                            status = "SENT",
+                            mediaUri = null,
+                            mediaType = null
+                        )
                     )
-                    dao.insertMessage(message)
+                }
+
+                if (messagesList.isNotEmpty()) {
+                    dao.insertMessages(messagesList)
                 }
             }
             Result.success()

@@ -1,10 +1,15 @@
 package ru.maximnosko.svyaz.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -63,7 +69,7 @@ fun DialpadBottomSheet(
                 )
                 AnimatedVisibility(
                     visible = number.isNotEmpty(),
-                    enter = fadeIn() + scaleIn(),
+                    enter = fadeIn() + scaleIn(animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow)),
                     exit = fadeOut() + scaleOut()
                 ) {
                     IconButton(
@@ -101,37 +107,13 @@ fun DialpadBottomSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         rowKeys.forEach { key ->
-                            Surface(
+                            DialpadKeyButton(
+                                key = key,
                                 onClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     number += key.main
-                                },
-                                modifier = Modifier.size(68.dp),
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                tonalElevation = 2.dp
-                            ) {
-                                Column(
-                                    modifier = Modifier.fillMaxSize(),
-                                    verticalArrangement = Arrangement.Center,
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = key.main,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    if (key.sub.isNotEmpty()) {
-                                        Text(
-                                            text = key.sub,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
                                 }
-                            }
+                            )
                         }
                     }
                 }
@@ -144,6 +126,14 @@ fun DialpadBottomSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                val chatInteractionSource = remember { MutableInteractionSource() }
+                val isChatPressed by chatInteractionSource.collectIsPressedAsState()
+                val chatScale by animateFloatAsState(
+                    targetValue = if (isChatPressed) 0.92f else 1.0f,
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+                    label = "chatScale"
+                )
+
                 FilledTonalButton(
                     onClick = {
                         if (number.isNotEmpty()) {
@@ -151,9 +141,11 @@ fun DialpadBottomSheet(
                             onAction(number, false)
                         }
                     },
+                    interactionSource = chatInteractionSource,
                     modifier = Modifier
                         .weight(1f)
-                        .height(52.dp),
+                        .height(52.dp)
+                        .scale(chatScale),
                     shape = RoundedCornerShape(16.dp),
                     enabled = number.isNotEmpty(),
                     colors = ButtonDefaults.filledTonalButtonColors(
@@ -166,6 +158,14 @@ fun DialpadBottomSheet(
                     Text("Чат", style = MaterialTheme.typography.titleSmall)
                 }
 
+                val callInteractionSource = remember { MutableInteractionSource() }
+                val isCallPressed by callInteractionSource.collectIsPressedAsState()
+                val callScale by animateFloatAsState(
+                    targetValue = if (isCallPressed) 0.92f else 1.0f,
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+                    label = "callScale"
+                )
+
                 Button(
                     onClick = {
                         if (number.isNotEmpty()) {
@@ -173,9 +173,11 @@ fun DialpadBottomSheet(
                             onAction(number, true)
                         }
                     },
+                    interactionSource = callInteractionSource,
                     modifier = Modifier
                         .weight(1f)
-                        .height(52.dp),
+                        .height(52.dp)
+                        .scale(callScale),
                     shape = RoundedCornerShape(16.dp),
                     enabled = number.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(
@@ -187,6 +189,52 @@ fun DialpadBottomSheet(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Вызов", style = MaterialTheme.typography.titleSmall)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DialpadKeyButton(
+    key: DialpadKey,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        label = "dialKeyScale"
+    )
+
+    Surface(
+        onClick = onClick,
+        interactionSource = interactionSource,
+        modifier = Modifier
+            .size(68.dp)
+            .scale(scale),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 2.dp
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = key.main,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (key.sub.isNotEmpty()) {
+                Text(
+                    text = key.sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

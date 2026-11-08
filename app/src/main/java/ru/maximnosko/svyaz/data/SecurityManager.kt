@@ -21,6 +21,7 @@ import androidx.core.content.edit
 object SecurityManager {
     private const val TAG = "SecurityManager"
     private const val KEY_ALIAS = "svyaz_db_key_v2" // Incremented version to ensure fresh start
+    private const val AUDIT_KEY_ALIAS = "svyaz_audit_key_v1"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val PREFS_NAME = "security_prefs"
     private const val ENCRYPTED_PASSPHRASE_KEY = "encrypted_passphrase"
@@ -86,7 +87,10 @@ object SecurityManager {
                         .putString(IV_KEY, Base64.encodeToString(iv, Base64.NO_WRAP))
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Encryption of passphrase failed", e)
+                // If we cannot persist the encrypted passphrase, returning an
+                // unsaved one would leave the DB openable now but unopenable on
+                // the next launch (fresh passphrase != stored one). Fail loudly.
+                throw IllegalStateException("Failed to persist database passphrase", e)
             }
 
             passphrase
@@ -121,11 +125,40 @@ object SecurityManager {
                         putString(IV_KEY, Base64.encodeToString(iv, Base64.NO_WRAP))
                     }
                 } catch (ex: Exception) {
-                    Log.e(TAG, "Failed to store re-generated passphrase", ex)
+                    throw IllegalStateException("Failed to persist re-generated passphrase", ex)
                 }
                 newPassphrase
             }
         }
+    }
+
+    /**
+     * Returns a dedicated hardware-backed KeyStore key used only for encrypting
+     * ORI audit content. Kept separate from the SQLCipher passphrase so that the
+     * two cryptographic primitives never share key material.
+     */
+    fun getAuditKey(): javax.crypto.SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+        keyStore.load(null)
+        if (!keyStore.containsAlias(AUDIT_KEY_ALIAS)) {
+            val keyGenerator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                ANDROID_KEYSTORE
+            )
+            val spec = KeyGenParameterSpec.Builder(
+                AUDIT_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+            keyGenerator.init(spec)
+            keyGenerator.generateKey()
+        }
+        val entry = keyStore.getEntry(AUDIT_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+            ?: throw IllegalStateException("Audit key is unavailable")
+        return entry.secretKey
     }
 
     /**

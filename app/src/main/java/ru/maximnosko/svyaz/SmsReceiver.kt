@@ -44,31 +44,34 @@ class SmsReceiver : BroadcastReceiver() {
 
         val complianceManager = ComplianceManager(context)
         val appContext = context.applicationContext
-        
-        for (sms in messages) {
-            val address = sms.displayOriginatingAddress ?: "Unknown"
-            val body = sms.displayMessageBody ?: ""
-            val timestamp = System.currentTimeMillis()
-            
-            val values = ContentValues().apply {
-                put(Telephony.Sms.ADDRESS, address)
-                put(Telephony.Sms.BODY, body)
-                put(Telephony.Sms.DATE, timestamp)
-                put(Telephony.Sms.READ, 0)
-            }
-            
-            // 1. Guaranteed System DB insertion
-            val uri = context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
-            if (uri == null) {
-                Log.e("SmsReceiver", "FAILED to save SMS to system database")
-            }
+        val pendingResult = goAsync()
 
-            // 2. User Notification
-            showNotification(appContext, address, "Новое сообщение")
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // Group multipart segments by sender address
+                val grouped = messages.groupBy { it.displayOriginatingAddress ?: "Unknown" }
 
-            // 3. Save to local SvyazDatabase and log ORI compliance
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
+                for ((address, smsParts) in grouped) {
+                    val body = smsParts.joinToString("") { it.displayMessageBody ?: "" }
+                    val timestamp = smsParts.firstOrNull()?.timestampMillis ?: System.currentTimeMillis()
+
+                    val values = ContentValues().apply {
+                        put(Telephony.Sms.ADDRESS, address)
+                        put(Telephony.Sms.BODY, body)
+                        put(Telephony.Sms.DATE, timestamp)
+                        put(Telephony.Sms.READ, 0)
+                    }
+
+                    // 1. Guaranteed System DB insertion
+                    val uri = context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
+                    if (uri == null) {
+                        Log.e("SmsReceiver", "FAILED to save SMS to system database")
+                    }
+
+                    // 2. User Notification
+                    showNotification(appContext, address, body)
+
+                    // 3. Save to local SvyazDatabase and log ORI compliance
                     val database = SvyazDatabase.getDatabase(appContext)
                     val dao = database.threadDao()
                     val systemDataProvider = SystemDataProvider(appContext)
@@ -123,14 +126,18 @@ class SmsReceiver : BroadcastReceiver() {
                         recipient = "ME",
                         content = body
                     )
-                } catch (e: Exception) {
-                    Log.e("SmsReceiver", "Compliance or local DB logging failed for $address", e)
                 }
+            } catch (e: Exception) {
+                Log.e("SmsReceiver", "Error processing incoming SMS batch", e)
+            } finally {
+                try {
+                    pendingResult.finish()
+                } catch (_: Exception) {}
             }
         }
     }
 
-    private fun showNotification(context: Context, sender: String, message: String) {
+    private fun showNotification(context: Context, sender: String, body: String) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "incoming_sms"
 
@@ -143,17 +150,46 @@ class SmsReceiver : BroadcastReceiver() {
             notificationManager.createNotificationChannel(channel)
         }
 
+        val systemDataProvider = SystemDataProvider(context)
+        val contactName = systemDataProvider.getContactNameFromNumber(sender) ?: sender
+
+        val prefs = context.getSharedPreferences("svyaz_app_prefs", Context.MODE_PRIVATE)
+        val hideFinance = prefs.getBoolean("hide_finance", prefs.getBoolean("hide_finance_notifications", false))
+        val hideCodes = prefs.getBoolean("hide_codes", prefs.getBoolean("hide_codes_notifications", false))
+
+        val isCode = body.contains(Regex("код|code|пароль|otp", RegexOption.IGNORE_CASE))
+        val isFinance = body.contains(Regex("баланс|счет|карт|руб|rur|rub|usd|eur", RegexOption.IGNORE_CASE))
+
+        val displayText = when {
+            hideCodes && isCode -> "Одноразовый код подтверждения"
+            hideFinance && isFinance -> "Финансовое уведомление"
+            else -> body
+        }
+
+        val chatIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_chat_address", sender)
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            kotlin.math.abs(sender.hashCode()),
+            chatIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(sender)
-            .setContentText(message)
+            .setSmallIcon(R.drawable.ic_notification_svyaz)
+            .setContentTitle(contactName)
+            .setContentText(displayText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(displayText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
 
-        val notificationId = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+        val notificationId = kotlin.math.abs(sender.hashCode())
         notificationManager.notify(notificationId, notification)
     }
 }

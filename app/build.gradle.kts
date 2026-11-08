@@ -15,8 +15,12 @@ android {
         applicationId = "ru.maximnosko.svyaz"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 261101
+        versionName = "26.11.1-beta"
+
+        val rustoreProjectId = System.getenv("RUSTORE_PROJECT_ID") ?: "svyaz_project_2026"
+        manifestPlaceholders["RUSTORE_PROJECT_ID"] = rustoreProjectId
+        buildConfigField("String", "RUSTORE_PROJECT_ID", "\"$rustoreProjectId\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -31,13 +35,23 @@ android {
         // Локально, когда секреты не заданы, используется debug-ключ.
         create("release") {
             val keystoreBase64 = System.getenv("KEYSTORE_BASE64")
+            val localReleaseKeystore = File(rootProject.rootDir, "release.jks")
+            val storePass = System.getenv("KEYSTORE_PASSWORD")
+            val keyPass = System.getenv("KEY_PASSWORD") ?: storePass
+            val keyAliasName = System.getenv("KEY_ALIAS") ?: "key0"
+
             if (!keystoreBase64.isNullOrBlank()) {
                 val keystoreFile = File(rootProject.rootDir, "keystore.jks")
                 keystoreFile.writeBytes(Base64.getDecoder().decode(keystoreBase64))
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storePassword = storePass
+                keyAlias = keyAliasName
+                keyPassword = keyPass
+            } else if (localReleaseKeystore.exists() && !storePass.isNullOrBlank()) {
+                storeFile = localReleaseKeystore
+                storePassword = storePass
+                keyAlias = keyAliasName
+                keyPassword = keyPass
             } else {
                 // Fallback для локальной разработки: debug-ключ
                 storeFile = signingConfigs.getByName("debug").storeFile
@@ -65,10 +79,12 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
+            keepDebugSymbols += "**/*.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

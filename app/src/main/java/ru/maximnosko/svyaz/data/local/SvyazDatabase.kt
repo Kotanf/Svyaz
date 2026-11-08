@@ -16,7 +16,7 @@ import ru.maximnosko.svyaz.data.SecurityManager
         FolderEntity::class,
         ThreadFolderLink::class
     ], 
-    version = 7, 
+    version = 8, 
     exportSchema = false
 )
 abstract class SvyazDatabase : RoomDatabase() {
@@ -44,7 +44,8 @@ abstract class SvyazDatabase : RoomDatabase() {
                     Migrations.MIGRATION_3_4, 
                     Migrations.MIGRATION_4_5, 
                     Migrations.MIGRATION_5_6,
-                    Migrations.MIGRATION_6_7
+                    Migrations.MIGRATION_6_7,
+                    Migrations.MIGRATION_7_8
                 )
                 .build()
                 INSTANCE = instance

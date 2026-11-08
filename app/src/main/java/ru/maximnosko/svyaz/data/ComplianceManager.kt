@@ -3,13 +3,10 @@ package ru.maximnosko.svyaz.data
 import android.content.Context
 import android.util.Base64
 import android.util.Log
-import java.security.SecureRandom
-import javax.crypto.spec.GCMParameterSpec
 import ru.maximnosko.svyaz.data.local.ComplianceLogEntity
 import ru.maximnosko.svyaz.data.local.SvyazDatabase
 import java.util.UUID
 import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * ComplianceManager handles ORI (Организатор распространения информации) requirements.
@@ -50,36 +47,30 @@ class ComplianceManager(private val context: Context) {
     }
 
     private fun encryptForAudit(text: String): String {
-        var keyBytes: ByteArray? = null
         return try {
-            keyBytes = SecurityManager.getDatabasePassphrase(context)
-            val secretKey = SecretKeySpec(keyBytes, "AES")
+            // Use a dedicated KeyStore-backed key; never the SQLCipher passphrase.
+            val secretKey = SecurityManager.getAuditKey()
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            val secureRandom = SecureRandom()
-            val iv = ByteArray(12)
-            secureRandom.nextBytes(iv)
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
-            
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            val iv = cipher.iv
+
             val encryptedBytes = cipher.doFinal(text.toByteArray())
-            
-            // KWRAP: Envelope structure [Version:1][IV:12][CipherText]
-            val combined = ByteArray(1 + iv.size + encryptedBytes.size)
+
+            // Envelope structure [Version:1][IvLen:1][IV][CipherText]
+            val combined = ByteArray(2 + iv.size + encryptedBytes.size)
             combined[0] = 1 // Version byte for future-proofing
-            System.arraycopy(iv, 0, combined, 1, iv.size)
-            System.arraycopy(encryptedBytes, 0, combined, 1 + iv.size, encryptedBytes.size)
-            
+            combined[1] = iv.size.toByte()
+            System.arraycopy(iv, 0, combined, 2, iv.size)
+            System.arraycopy(encryptedBytes, 0, combined, 2 + iv.size, encryptedBytes.size)
+
             Base64.encodeToString(combined, Base64.NO_WRAP)
         } catch (e: Exception) {
             Log.e("ComplianceManager", "Encryption failed", e)
             "ENCRYPTION_ERROR"
-        } finally {
-            // Memory Sanitization: Wipe key bytes after encryption
-            SecurityManager.sanitize(keyBytes)
         }
     }
 
     fun auditContent(content: String): Boolean {
-        val dangerousKeywords = listOf("бомба", "теракт", "взрыв", "оружие", "захват", "убийство")
         val lowerContent = content.lowercase()
         // Strict check to avoid false positives on normal words (e.g. 'предмет', 'взрывчатка' but not 'взрыв')
         val regexes = listOf(

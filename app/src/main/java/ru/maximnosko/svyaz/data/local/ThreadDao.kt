@@ -17,12 +17,30 @@ interface ThreadDao {
     @Query("UPDATE threads SET folder = :folderName WHERE id = :threadId")
     suspend fun updateFolder(threadId: String, folderName: String?)
 
+    @Query("DELETE FROM threads WHERE id = :threadId")
+    suspend fun deleteThread(threadId: String)
+
+    @Query("DELETE FROM messages WHERE threadId = :threadId")
+    suspend fun deleteMessagesForThread(threadId: String)
+
+    @Query("DELETE FROM threads WHERE folder = 'Корзина'")
+    suspend fun emptyTrashThreads()
+
+    @Query("SELECT * FROM threads WHERE folder = :folderName")
+    suspend fun getThreadsInFolderList(folderName: String): List<ThreadEntity>
+
     // Messages
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessageEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
     @Query("SELECT * FROM messages WHERE threadId = :threadId ORDER BY timestamp ASC")
     suspend fun getMessagesForThread(threadId: String): List<MessageEntity>
+
+    @Query("UPDATE messages SET status = :status WHERE id = :messageId")
+    suspend fun updateMessageStatus(messageId: String, status: String)
 
     // Compliance / ORI
     @Insert(onConflict = OnConflictStrategy.IGNORE)

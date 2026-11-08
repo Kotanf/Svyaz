@@ -56,4 +56,47 @@ object Migrations {
             db.execSQL("ALTER TABLE threads ADD COLUMN phoneNumber TEXT NOT NULL DEFAULT ''")
         }
     }
+
+    // Migration from v7 to v8 - Reconcile schema with current entities:
+    //  * compliance_logs had a 'contentEncrypted' column (added in 5->6) that is
+    //    not part of ComplianceLogEntity. Rebuild the table without it so upgraded
+    //    databases match the schema Room creates on a fresh install.
+    //  * chat_folders / thread_folder_links were never created by earlier
+    //    migrations (3->4 only created an orphan 'folders' table). Create them
+    //    so upgraded databases have the tables the DAO queries.
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Rebuild compliance_logs without the extra contentEncrypted column.
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS compliance_logs_new (" +
+                    "id TEXT NOT NULL PRIMARY KEY, " +
+                    "timestamp INTEGER NOT NULL, " +
+                    "type TEXT NOT NULL, " +
+                    "direction TEXT NOT NULL, " +
+                    "senderAddress TEXT NOT NULL, " +
+                    "recipientAddress TEXT NOT NULL, " +
+                    "content TEXT, " +
+                    "status TEXT NOT NULL, " +
+                    "metadata TEXT)"
+            )
+            db.execSQL(
+                "INSERT INTO compliance_logs_new (id, timestamp, type, direction, senderAddress, recipientAddress, content, status, metadata) " +
+                    "SELECT id, timestamp, type, direction, senderAddress, recipientAddress, content, status, metadata FROM compliance_logs"
+            )
+            db.execSQL("DROP TABLE compliance_logs")
+            db.execSQL("ALTER TABLE compliance_logs_new RENAME TO compliance_logs")
+
+            // Drop the orphan 'folders' table that no entity maps to.
+            db.execSQL("DROP TABLE IF EXISTS folders")
+
+            // Create the folder tables that the current entities require.
+            db.execSQL("CREATE TABLE IF NOT EXISTS chat_folders (name TEXT NOT NULL PRIMARY KEY, icon TEXT NOT NULL DEFAULT 'folder')")
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS thread_folder_links (" +
+                    "threadId TEXT NOT NULL, " +
+                    "folderName TEXT NOT NULL, " +
+                    "PRIMARY KEY(threadId, folderName))"
+            )
+        }
+    }
 }
